@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Weather Forecast with Interactive Map</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            text-align: center;
+        }
+        #map {
+            height: 400px;
+            margin-bottom: 20px;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-top: 20px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        #cropAge, #nextIrrigationDate {
+            margin-top: 20px;
+        }
+        .highlight {
+            background-color: red !important;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <h1>Weather Forecast with Interactive Map</h1>
+    <div id="map"></div>
+    <h2>14-Day Irrigation Forecast for Sugarcane Plantation in Gal-Oya area</h2>
+    <label for="plantingDate">Select Planting Date:</label>
+    <input type="date" id="plantingDate" />
+    <label for="irrigationMethod">Select Irrigation Method:</label>
+    <select id="irrigationMethod">
+        <option value="furrow">Furrow Irrigation (Efficiency: 0.6)</option>
+        <option value="sprinkler">Sprinkler Irrigation (Efficiency: 0.85)</option>
+        <option value="drip">Drip Irrigation (Efficiency: 0.95)</option>
+    </select>
+    <div id="cropAge"></div>
+    <div id="nextIrrigationDate"></div>
+    
+    <table>
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Rain Sum (mm)</th>
+                <th>Precipitation Probability (%)</th>
+                <th>ET0 FAO Evapotranspiration (mm)</th>
+                <th>Net Irrigation Water Requirement (mm)</th>
+                <th>Gross Irrigation Requirement (mm)</th>
+            </tr>
+        </thead>
+        <tbody id="forecastData"></tbody>
+    </table>
+
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script>
+        const map = L.map('map').setView([7.224169, 81.674857], 15);
+        
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '© OpenStreetMap'
+        }).addTo(map);
+
+        map.on('click', function(e) {
+            const latitude = e.latlng.lat;
+            const longitude = e.latlng.lng;
+            fetchWeatherData(latitude, longitude);
+        });
+
+        document.getElementById('plantingDate').addEventListener('change', function () {
+            const latitude = map.getCenter().lat; 
+            const longitude = map.getCenter().lng; 
+            fetchWeatherData(latitude, longitude);
+            calculateCropAge(); 
+        });
+        
+        document.getElementById('irrigationMethod').addEventListener('change', function () {
+            const latitude = map.getCenter().lat; 
+            const longitude = map.getCenter().lng; 
+            fetchWeatherData(latitude, longitude);
+        });
+
+        function fetchWeatherData(latitude, longitude) {
+            const apiUrl = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&daily=rain_sum,precipitation_probability_max,et0_fao_evapotranspiration&timezone=GMT&forecast_days=14`;
+
+            fetch(apiUrl)
+                .then(response => response.json())
+                .then(data => {
+                    const forecastData = document.getElementById("forecastData");
+                    forecastData.innerHTML = ''; 
+
+                    const plantingDateInput = document.getElementById('plantingDate').value;
+                    const currentDate = new Date();
+                    const plantingDate = new Date(plantingDateInput);
+                    const ageInDays = Math.floor((currentDate - plantingDate) / (1000 * 60 * 60 * 24));
+
+                    const irrigationMethod = document.getElementById('irrigationMethod').value;
+                    let irrigationEfficiency = 1;
+
+                    switch (irrigationMethod) {
+                        case 'furrow':
+                            irrigationEfficiency = 0.6;
+                            break;
+                        case 'sprinkler':
+                            irrigationEfficiency = 0.85;
+                            break;
+                        case 'drip':
+                            irrigationEfficiency = 0.95;
+                            break;
+                    }
+
+                    let cumulativeGrossIrrigation = 0;
+                    let cumulativeNetIrrigationRequirement = 0; // Initialize cumulative net irrigation requirement
+                    let nextIrrigationDate = '';
+                    let grossIrrigationAtNextDate = 0; // Track cumulative gross irrigation at the highlighted date
+
+                    data.daily.time.forEach((date, index) => {
+                        const rainSum = data.daily.rain_sum[index] || 0;
+                        const et0 = data.daily.et0_fao_evapotranspiration[index] || 0;
+                        const k = calculateK(ageInDays);
+                        const cropWaterRequirement = et0 * k;
+                        const netIrrigationRequirement = cropWaterRequirement - (rainSum * 0.8);
+                        const grossIrrigationRequirement = netIrrigationRequirement / irrigationEfficiency;
+
+                        cumulativeGrossIrrigation += grossIrrigationRequirement;
+                        cumulativeNetIrrigationRequirement += netIrrigationRequirement; // Update cumulative net irrigation requirement
+
+                        const row = document.createElement("tr");
+                        row.innerHTML = `
+                            <td>${date}</td>
+                            <td>${rainSum}</td>
+                            <td>${data.daily.precipitation_probability_max[index] || 0}</td>
+                            <td>${et0}</td>
+                            <td>${netIrrigationRequirement.toFixed(2)}</td>
+                            <td>${grossIrrigationRequirement.toFixed(2)}</td>
+                        `;
+                        
+                        if (cumulativeNetIrrigationRequirement >= 40 && nextIrrigationDate === '') { // Use cumulative net irrigation requirement
+                            nextIrrigationDate = date; // Set next irrigation date
+                            grossIrrigationAtNextDate = cumulativeGrossIrrigation; // Store cumulative gross irrigation at this date
+                            row.classList.add('highlight'); // Highlight the row
+                        }
+
+                        forecastData.appendChild(row);
+                    });
+
+                    if (nextIrrigationDate) {
+                        document.getElementById('nextIrrigationDate').innerHTML = `Next irrigation date is: ${nextIrrigationDate} with cumulative gross irrigation requirement_mm: ${grossIrrigationAtNextDate.toFixed(2)}`;
+                    } else {
+                        document.getElementById('nextIrrigationDate').innerHTML = '';
+                    }
+                })
+                .catch(error => console.error('Error fetching the weather data:', error));
+        }
+
+        function calculateK(ageInDays) {
+            if (ageInDays < 36) {
+                return 0.4;
+            } else if (ageInDays <= 95) {
+                return 0.4 + ((1.25 - 0.4) / (95 - 36)) * (ageInDays - 36);
+            } else if (ageInDays <= 305) {
+                return 1.25;
+            } else if (ageInDays <= 356) {
+                return 1.25 - ((1.25 - 0.75) / (356 - 306)) * (ageInDays - 306);
+            } else {
+                return 0.75; // Beyond 356 days
+            }
+        }
+
+        function calculateCropAge() {
+            const plantingDateInput = document.getElementById('plantingDate').value;
+            const cropAgeDiv = document.getElementById('cropAge');
+
+            if (plantingDateInput) {
+                const plantingDate = new Date(plantingDateInput);
+                const currentDate = new Date();
+                const ageInDays = Math.floor((currentDate - plantingDate) / (1000 * 60 * 60 * 24));
+                
+                cropAgeDiv.innerHTML = `Crop Age: ${ageInDays} days`;
+            } else {
+                cropAgeDiv.innerHTML = 'Please select a planting date.';
+            }
+        }
+    </script>
+</body>
+</html>
